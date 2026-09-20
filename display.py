@@ -1,15 +1,21 @@
+
 # ============================================================
 # ARDUDOWS UNIVERSAL DISPLAY
 # AUTO DEVICE / OS / SERIAL DETECTION
 #
 # 기존 화면 전송 로직은 그대로 유지
 # 초반 장치 검사 + 포트 선택 + OS 검사만 자동화
+#
+# Android / Termux 추가
 # ============================================================
 
 import sys
 import time
 import struct
 import platform
+import os
+import subprocess
+import shutil
 
 import serial
 import serial.tools.list_ports
@@ -30,7 +36,24 @@ if OS_NAME == "Windows":
     OS_TYPE = "WINDOWS"
 
 elif OS_NAME == "Linux":
-    OS_TYPE = "LINUX"
+
+    # --------------------------------------------------------
+    # Android / Termux detection
+    # --------------------------------------------------------
+
+    if (
+        "ANDROID_ROOT" in os.environ
+        or "ANDROID_DATA" in os.environ
+        or "TERMUX_VERSION" in os.environ
+        or (
+            "PREFIX" in os.environ
+            and "com.termux" in os.environ["PREFIX"]
+        )
+    ):
+        OS_TYPE = "ANDROID"
+
+    else:
+        OS_TYPE = "LINUX"
 
 elif OS_NAME == "Darwin":
     OS_TYPE = "MACOS"
@@ -72,6 +95,17 @@ PACK = struct.Struct(">BHHHH")
 
 
 # ============================================================
+# ANDROID CONFIG
+# ============================================================
+
+# Termux에서 사용할 임시 스크린샷 파일
+ANDROID_SCREENSHOT = (
+    "/data/data/com.termux/files/home/"
+    "ardudows_screen.png"
+)
+
+
+# ============================================================
 # DEVICE SCAN
 # ============================================================
 
@@ -84,6 +118,10 @@ def scan_devices():
     print()
     print("OS detected:")
     print(" ", OS_NAME)
+
+    if OS_TYPE == "ANDROID":
+        print(" Android / Termux detected")
+
     print()
 
     ports = list(
@@ -220,8 +258,37 @@ def detect_screen():
     global SRC_W
     global SRC_H
 
+
     print("Detecting display...")
 
+
+    # ========================================================
+    # ANDROID
+    # ========================================================
+
+    if OS_TYPE == "ANDROID":
+
+        print(
+            "Android screen detection "
+            "will use Termux screenshot."
+        )
+
+        # 실제 해상도는 첫 screenshot에서 자동 결정
+        SRC_W = TFT_W
+        SRC_H = TFT_H
+
+        print(
+            "Android display: AUTO"
+        )
+
+        print()
+
+        return
+
+
+    # ========================================================
+    # WINDOWS / LINUX / MACOS
+    # ========================================================
 
     with mss.MSS() as detector:
 
@@ -348,6 +415,10 @@ print("========================================")
 print(
     "OS     :",
     OS_NAME
+)
+print(
+    "Type   :",
+    OS_TYPE
 )
 print(
     "Python :",
@@ -765,9 +836,7 @@ def capture_cursor_image(hcursor):
             if not gdi32.GetObjectW(
 
                 ii.hbmColor,
-
                 ctypes.sizeof(bmp),
-
                 ctypes.byref(bmp)
 
             ):
@@ -776,7 +845,6 @@ def capture_cursor_image(hcursor):
 
 
             width = bmp.bmWidth
-
             height = bmp.bmHeight
 
 
@@ -785,9 +853,7 @@ def capture_cursor_image(hcursor):
             if not gdi32.GetObjectW(
 
                 ii.hbmMask,
-
                 ctypes.sizeof(bmp),
-
                 ctypes.byref(bmp)
 
             ):
@@ -796,7 +862,6 @@ def capture_cursor_image(hcursor):
 
 
             width = bmp.bmWidth
-
             height = bmp.bmHeight // 2
 
 
@@ -842,7 +907,6 @@ def capture_cursor_image(hcursor):
 
 
         dib = None
-
         old_obj = None
 
 
@@ -857,13 +921,16 @@ def capture_cursor_image(hcursor):
                 )
             )
 
+
             bmi.bmiHeader.biWidth = (
                 width
             )
 
+
             bmi.bmiHeader.biHeight = (
                 -height
             )
+
 
             bmi.bmiHeader.biPlanes = 1
 
@@ -924,19 +991,15 @@ def capture_cursor_image(hcursor):
                 mem_dc,
 
                 0,
-
                 0,
 
                 hcursor,
 
                 width,
-
                 height,
 
                 0,
-
                 None,
-
                 DI_NORMAL
 
             )
@@ -960,9 +1023,7 @@ def capture_cursor_image(hcursor):
             ).reshape(
 
                 height,
-
                 width,
-
                 4
 
             )
@@ -1103,7 +1164,6 @@ def get_cursor_fast():
         if result is None:
 
             cached_cursor_handle = None
-
             cached_cursor_image = None
 
             return None
@@ -1173,18 +1233,21 @@ print("========================================")
 print(" ESP8266 ULTRA FAST UART DISPLAY")
 print("========================================")
 print("OS     :", OS_NAME)
+print("Type   :", OS_TYPE)
 print("UART   :", PORT)
 print("BAUD   :", BAUD)
 print("Source :", SRC_W, "x", SRC_H)
 print("Output :", TFT_W, "x", TFT_H)
 print("Tile   :", TILE, "x", TILE)
 print("Batch  :", BATCH_TILES, "tiles")
+
 print(
     "Cursor :",
     "REAL WINDOWS CURSOR + CACHE"
     if OS_TYPE == "WINDOWS"
     else "OS CURSOR API DISABLED"
 )
+
 print("========================================")
 print()
 
@@ -1214,7 +1277,81 @@ print()
 # MSS
 # ============================================================
 
-sct = mss.MSS()
+# Android에서는 MSS를 사용하지 않는다.
+if OS_TYPE != "ANDROID":
+
+    sct = mss.MSS()
+
+else:
+
+    sct = None
+
+
+# ============================================================
+# ANDROID SCREENSHOT
+# ============================================================
+
+def android_capture():
+
+    """
+    Android / Termux 전용.
+
+    Termux:API가 설치되어 있어야 한다.
+
+    명령:
+        termux-screenshot
+    """
+
+    if shutil.which(
+        "termux-screenshot"
+    ) is None:
+
+        raise RuntimeError(
+
+            "termux-screenshot not found.\n"
+
+            "Install Termux:API first."
+
+        )
+
+
+    result = subprocess.run(
+
+        [
+            "termux-screenshot",
+            "-f",
+            ANDROID_SCREENSHOT
+        ],
+
+        stdout=subprocess.DEVNULL,
+
+        stderr=subprocess.PIPE
+
+    )
+
+
+    if result.returncode != 0:
+
+        error = result.stderr.decode(
+            errors="ignore"
+        )
+
+        raise RuntimeError(
+
+            "Android screenshot failed:\n"
+            + error
+
+        )
+
+
+    image = Image.open(
+        ANDROID_SCREENSHOT
+    ).convert(
+        "RGB"
+    )
+
+
+    return image
 
 
 # ============================================================
@@ -1376,28 +1513,55 @@ try:
         # SCREEN CAPTURE
         # ====================================================
 
-        shot = sct.grab({
+        if OS_TYPE == "ANDROID":
 
-            "left": 0,
+            # -----------------------------------------------
+            # Android
+            # -----------------------------------------------
 
-            "top": 0,
-
-            "width": SRC_W,
-
-            "height": SRC_H
-
-        })
+            img = android_capture()
 
 
-        img = Image.frombytes(
+            # 첫 프레임에서 실제 Android 해상도 확인
+            if (
+                SRC_W == TFT_W
+                and
+                SRC_H == TFT_H
+            ):
 
-            "RGB",
+                SRC_W = img.width
+                SRC_H = img.height
 
-            shot.size,
 
-            shot.rgb
+        else:
 
-        )
+            # -----------------------------------------------
+            # Windows / Linux / macOS
+            # 기존 MSS 로직 그대로
+            # -----------------------------------------------
+
+            shot = sct.grab({
+
+                "left": 0,
+
+                "top": 0,
+
+                "width": SRC_W,
+
+                "height": SRC_H
+
+            })
+
+
+            img = Image.frombytes(
+
+                "RGB",
+
+                shot.size,
+
+                shot.rgb
+
+            )
 
 
         # ====================================================
@@ -1516,6 +1680,7 @@ try:
             ):
 
                 cursor_img_small = (
+
                     cursor_img.resize(
 
                         (
@@ -1526,6 +1691,7 @@ try:
                         Image.Resampling.NEAREST
 
                     )
+
                 )
 
             else:
@@ -1689,7 +1855,6 @@ try:
             pixel_bytes = (
 
                 tile.byteswap()
-
                 .tobytes()
 
             )
@@ -1777,7 +1942,9 @@ try:
 
             time.perf_counter()
 
-            - start_time
+            -
+
+            start_time
 
         )
 
@@ -1786,7 +1953,9 @@ try:
 
             time.perf_counter()
 
-            - frame_start
+            -
+
+            frame_start
 
         )
 
@@ -1854,4 +2023,7 @@ finally:
 
     ser.close()
 
-    sct.close()
+    if sct is not None:
+
+        sct.close()
+
